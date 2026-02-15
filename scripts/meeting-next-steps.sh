@@ -56,8 +56,15 @@ if [[ ${#missing_fields[@]} -gt 0 ]]; then
   exit 1
 fi
 
-# --- Load config ---
+# --- Required env vars (must be set before proceeding) ---
+# FELLOW_API_KEY is required via env var — not stored in config for security
 FELLOW_API_KEY="${FELLOW_API_KEY:-}"
+if [[ -z "$FELLOW_API_KEY" ]]; then
+  echo "ERROR: FELLOW_API_KEY is not set (required via env var)" >&2
+  exit 1
+fi
+
+# --- Load config ---
 SLACK_BOT_TOKEN="${SLACK_BOT_TOKEN:-}"
 FELLOW_BASE_URL=$(jq -r '.fellow.base_url // "https://api.fellow.app/v1"' "$CONFIG_PATH")
 GOG_PATH=$(jq -r '.gmail.gog_path // "/opt/homebrew/bin/gog"' "$CONFIG_PATH")
@@ -69,11 +76,6 @@ DATE_FORMAT=$(jq -r '.output.date_format // "%b %d, %Y %I:%M %p"' "$CONFIG_PATH"
 
 # Read ignore list
 IGNORE_MEETINGS=$(jq -r '.filters.ignore_meetings // [] | .[]' "$CONFIG_PATH" 2>/dev/null || true)
-
-if [[ -z "$FELLOW_API_KEY" ]]; then
-  echo "ERROR: FELLOW_API_KEY is not set" >&2
-  exit 1
-fi
 
 if [[ "$POST_SLACK" == "true" && -z "$SLACK_BOT_TOKEN" ]]; then
   echo "ERROR: SLACK_BOT_TOKEN is required for --slack mode" >&2
@@ -187,12 +189,16 @@ else
       message_ids=()
       if echo "$search_results" | jq -e 'type == "array"' &>/dev/null 2>&1; then
         while IFS= read -r mid; do
-          message_ids+=("$mid")
-        done < <(echo "$search_results" | jq -r '.[].id // .[].messageId // .[]' 2>/dev/null)
+          [[ -n "$mid" && "$mid" != "null" ]] && message_ids+=("$mid")
+        done < <(echo "$search_results" | jq -r '.[].id // .[].messageId // .[]' 2>/dev/null || echo "")
       else
         while IFS= read -r mid; do
           [[ -n "$mid" ]] && message_ids+=("$mid")
         done <<< "$search_results"
+      fi
+
+      if [[ ${#message_ids[@]} -eq 0 ]]; then
+        echo "  No parseable message IDs from gog output" >&2
       fi
 
       gmail_items="[]"
@@ -266,12 +272,27 @@ if [[ "$DRY_RUN" != "true" ]]; then
       continue
     fi
 
-    # Filter action items for this meeting
+    # Filter action items for this meeting (with fallback matching)
+    meeting_actions="[]"
     if [[ -n "$meeting_id" ]]; then
       meeting_actions=$(echo "$fellow_actions" | jq --arg mid "$meeting_id" \
         '[.[] | select(.meeting_id == ($mid | tonumber) or .meeting_id == $mid)]' 2>/dev/null || echo "[]")
-    else
-      meeting_actions="[]"
+    fi
+
+    # Fallback: if meeting_id match returned nothing, try matching by date + title substring
+    if [[ "$(echo "$meeting_actions" | jq 'length')" -eq 0 && -n "$meeting_date" && "$meeting_date" != "unknown" ]]; then
+      date_prefix=$(echo "$meeting_date" | cut -c1-10)  # YYYY-MM-DD
+      meeting_actions=$(echo "$fellow_actions" | jq \
+        --arg date "$date_prefix" \
+        --arg title "$meeting_name" \
+        '[.[] | select(
+          ((.created_at // .date // "") | startswith($date)) and
+          ((.meeting_title // .meeting_name // "") | ascii_downcase | contains($title | ascii_downcase))
+        )]' 2>/dev/null || echo "[]")
+      fallback_count=$(echo "$meeting_actions" | jq 'length')
+      if [[ "$fallback_count" -gt 0 ]]; then
+        echo "  ℹ️  Matched $fallback_count action(s) for '$meeting_name' via date+title fallback" >&2
+      fi
     fi
 
     # Split: your tasks vs others

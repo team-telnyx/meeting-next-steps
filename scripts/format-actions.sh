@@ -94,17 +94,43 @@ fi
 payload=$(jq -n --arg channel "$DM_CHANNEL" --arg text "$message" \
   '{ channel: $channel, text: $text, mrkdwn: true }')
 
-response=$(curl --connect-timeout 10 --max-time 30 -s -X POST "https://slack.com/api/chat.postMessage" \
-  -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d "$payload")
+# Retry wrapper: 3 attempts with exponential backoff (same pattern as EOM Credit Check)
+slack_post() {
+  local attempt=1 max=3 delay=2
+  while true; do
+    local response
+    response=$(curl --connect-timeout 10 --max-time 30 -s -X POST "https://slack.com/api/chat.postMessage" \
+      -H "Authorization: Bearer $SLACK_BOT_TOKEN" \
+      -H "Content-Type: application/json" \
+      -d "$payload" 2>/dev/null) || response='{}'
+
+    local ok
+    ok=$(echo "$response" | jq -r '.ok' 2>/dev/null || echo "false")
+    if [[ "$ok" == "true" ]]; then
+      echo "$response"
+      return 0
+    fi
+
+    if [[ $attempt -ge $max ]]; then
+      echo "$response"
+      return 1
+    fi
+
+    echo "  Retry $attempt/$max after ${delay}s..." >&2
+    sleep "$delay"
+    delay=$((delay * 2))
+    attempt=$((attempt + 1))
+  done
+}
+
+response=$(slack_post)
 
 ok=$(echo "$response" | jq -r '.ok' 2>/dev/null || echo "false")
 if [[ "$ok" == "true" ]]; then
   echo "📨 Posted action items to Slack DM" >&2
 else
   error=$(echo "$response" | jq -r '.error // "unknown"' 2>/dev/null || echo "unknown")
-  echo "ERROR: Slack post failed: $error" >&2
+  echo "ERROR: Slack post failed after 3 attempts: $error" >&2
   # Still output the message so it's not lost
   echo -e "$message"
   exit 1
