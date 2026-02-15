@@ -1,0 +1,27 @@
+{
+  "fellow": {
+    "api_key_env": "FELLOW_API_KEY",
+    "base_url": "https://api.fellow.app/v1"
+  },
+  "gmail": {
+    "gog_path": "/opt/homebrew/bin/gog",
+    "search_query": "from:gemini-app.google.com subject:\"Meeting notes\" newer_than:{days}h",
+    "max_results": 10
+  },
+  "slack": {
+    "dm_channel": "D000000YOUR_DM",
+    "bot_token_env": "SLACK_BOT_TOKEN"
+  },
+  "filters": {
+    "attendee_email": "you@example.com",
+    "ignore_meetings": [
+      "Daily Standup",
+      "All Hands"
+    ]
+  },
+  "output": {
+    "include_others_tasks": true,
+    "group_by": "meeting",
+    "date_format": "%b %d, %Y %I:%M %p"
+  }
+}

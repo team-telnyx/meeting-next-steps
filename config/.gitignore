@@ -1,0 +1,3 @@
+# Ignore actual config (contains personal settings)
+config.json
+*.local.json
